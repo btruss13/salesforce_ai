@@ -7,9 +7,9 @@ from simple_salesforce import Salesforce
 fake = Faker()
 
 sf = Salesforce(
-    username=os.getenv("btruss.daed3105e7bb@agentforce.com"),
-    password=os.getenv("Btmodulo13!"),
-    security_token=os.getenv("8hXBiguqtKDt8YLTcIQUnY0gx"),
+    username=os.getenv("SF_USERNAME"),
+    password=os.getenv("SF_PASSWORD"),
+    security_token=os.getenv("SF_SECURITY_TOKEN"),
     domain="login"  # Developer Edition uses login.salesforce.com
 )
 
