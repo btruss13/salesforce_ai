@@ -1,4 +1,3 @@
-cat << 'EOF' > generate_sales_data.py
 import json
 import random
 import subprocess
@@ -6,7 +5,7 @@ from datetime import datetime, timedelta
 from faker import Faker
 from simple_salesforce import Salesforce
 
-# Retrieve active authenticated session directly from Salesforce CLI
+# 1. Retrieve active authenticated session from Salesforce CLI
 try:
     cli_out = subprocess.check_output(
         ["sf", "org", "display", "--target-org", "salesforce_ai", "--json"]
@@ -50,7 +49,7 @@ STAGES = [
     ("Closed Won", 1.00),
 ]
 
-# 1. Accounts
+# 2. Accounts
 account_staging = []
 account_metadata = []
 
@@ -84,7 +83,7 @@ valid_accounts = [
 if not valid_accounts:
     raise SystemExit("CRITICAL: Zero accounts created.")
 
-# 2. Opportunities
+# 3. Opportunities
 opportunity_staging = []
 
 for acc in valid_accounts:
@@ -118,24 +117,4 @@ for acc in valid_accounts:
             f"Region:{acc['region']}|"
             f"Family:{primary_product['family']}|"
             f"Product:{primary_product['name']}|"
-            f"Cost:{deal_cost:.2f}|"
-            f"Profit:{gross_profit:.2f}|"
-            f"Margin:{margin_pct:.2f}%"
-        )
-
-        opportunity_staging.append({
-            "AccountId": acc["id"],
-            "Name": f"{primary_product['name']} - {acc['region']}"[:120],
-            "StageName": stage_name,
-            "Probability": int(probability * 100),
-            "Amount": deal_amount,
-            "CloseDate": deal_date.strftime("%Y-%m-%d"),
-            "LeadSource": random.choice(["Inbound Web", "Direct Outbound", "Partner Referral", "Field Event"]),
-            "Description": description
-        })
-
-opp_results = sf.bulk.Opportunity.insert(opportunity_staging)
-successful_opps = sum(1 for r in opp_results if r.get("success"))
-
-print(f"Loaded {len(valid_accounts)} Accounts and {successful_opps} Opportunities.")
-EOF
+            f"Cost:{
