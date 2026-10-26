@@ -1,26 +1,23 @@
-import os
+cat << 'EOF' > generate_sales_data.py
+import json
 import random
+import subprocess
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
 from faker import Faker
 from simple_salesforce import Salesforce
 
-load_dotenv()
-
-username = os.getenv("SF_USERNAME")
-password = os.getenv("SF_PASSWORD")
-security_token = os.getenv("SF_SECURITY_TOKEN")
-
-missing = [k for k, v in [("SF_USERNAME", username), ("SF_PASSWORD", password), ("SF_SECURITY_TOKEN", security_token)] if not v]
-if missing:
-    raise SystemExit(f"CRITICAL: Missing .env variables: {', '.join(missing)}")
-
-sf = Salesforce(
-    username=username,
-    password=password,
-    security_token=security_token,
-    domain="orgfarm-0d0502ec7e-dev-ed.develop.my"
-)
+# Retrieve active authenticated session directly from Salesforce CLI
+try:
+    cli_out = subprocess.check_output(
+        ["sf", "org", "display", "--target-org", "salesforce_ai", "--json"]
+    )
+    sf_data = json.loads(cli_out)["result"]
+    sf = Salesforce(
+        instance_url=sf_data["instanceUrl"],
+        session_id=sf_data["accessToken"]
+    )
+except Exception as e:
+    raise SystemExit(f"CRITICAL: Failed to load CLI session: {e}")
 
 fake = Faker()
 
@@ -141,3 +138,4 @@ opp_results = sf.bulk.Opportunity.insert(opportunity_staging)
 successful_opps = sum(1 for r in opp_results if r.get("success"))
 
 print(f"Loaded {len(valid_accounts)} Accounts and {successful_opps} Opportunities.")
+EOF
