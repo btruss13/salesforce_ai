@@ -1,22 +1,9 @@
+import csv
 import json
 import random
-import subprocess
+import uuid
 from datetime import datetime, timedelta
 from faker import Faker
-from simple_salesforce import Salesforce
-
-# 1. Retrieve active authenticated session from Salesforce CLI
-try:
-    cli_out = subprocess.check_output(
-        ["sf", "org", "display", "--target-org", "salesforce_ai", "--json"]
-    )
-    sf_data = json.loads(cli_out)["result"]
-    sf = Salesforce(
-        instance_url=sf_data["instanceUrl"],
-        session_id=sf_data["accessToken"]
-    )
-except Exception as e:
-    raise SystemExit(f"CRITICAL: Failed to load CLI session: {e}")
 
 fake = Faker()
 
@@ -49,45 +36,35 @@ STAGES = [
     ("Closed Won", 1.00),
 ]
 
-# 2. Accounts
-account_staging = []
-account_metadata = []
+accounts = []
+opportunities = []
+
+print("Generating synthetic Accounts and Opportunities...")
 
 for _ in range(NUM_ACCOUNTS):
+    account_id = f"001{uuid.uuid4().hex[:15]}"
     region = random.choice(list(GEOGRAPHIES.keys()))
     state_code = random.choice(GEOGRAPHIES[region])
     country = "USA" if "North America" in region else state_code
 
-    payload = {
-        "Name": fake.company()[:80],
-        "Industry": random.choice(["Technology", "Healthcare", "Finance", "Manufacturing", "Retail"]),
-        "BillingStreet": fake.street_address(),
-        "BillingCity": fake.city(),
-        "BillingState": state_code if country == "USA" else "",
-        "BillingPostalCode": fake.zipcode() if country == "USA" else fake.postcode()[:20],
-        "BillingCountry": country,
-        "AnnualRevenue": round(random.uniform(1000000, 80000000), 2),
-        "NumberOfEmployees": random.randint(50, 4000),
+    account_row = {
+        "id": account_id,
+        "name": fake.company()[:80],
+        "industry": random.choice(["Technology", "Healthcare", "Finance", "Manufacturing", "Retail"]),
+        "billing_street": fake.street_address(),
+        "billing_city": fake.city(),
+        "billing_state": state_code if country == "USA" else "",
+        "billing_postal_code": fake.zipcode() if country == "USA" else fake.postcode()[:20],
+        "billing_country": country,
+        "annual_revenue": round(random.uniform(1000000, 80000000), 2),
+        "number_of_employees": random.randint(50, 4000),
+        "created_date": START_DATE.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "_fivetran_synced": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
-    account_staging.append(payload)
-    account_metadata.append({"region": region, "state": state_code, "country": country})
+    accounts.append(account_row)
 
-account_results = sf.bulk.Account.insert(account_staging)
-
-valid_accounts = [
-    {"id": res["id"], "region": account_metadata[i]["region"]}
-    for i, res in enumerate(account_results)
-    if res.get("success")
-]
-
-if not valid_accounts:
-    raise SystemExit("CRITICAL: Zero accounts created.")
-
-# 3. Opportunities
-opportunity_staging = []
-
-for acc in valid_accounts:
     for _ in range(random.randint(*OPPS_PER_ACCOUNT_RANGE)):
+        opp_id = f"006{uuid.uuid4().hex[:15]}"
         selected_products = random.sample(PRODUCT_CATALOG, k=random.randint(1, 3))
         deal_amount = 0.0
         deal_cost = 0.0
@@ -114,7 +91,7 @@ for acc in valid_accounts:
         primary_product = selected_products[0]
 
         description = (
-            f"Region:{acc['region']}|"
+            f"Region:{region}|"
             f"Family:{primary_product['family']}|"
             f"Product:{primary_product['name']}|"
             f"Cost:{deal_cost:.2f}|"
@@ -122,18 +99,39 @@ for acc in valid_accounts:
             f"Margin:{margin_pct:.2f}%"
         )
 
-        opportunity_staging.append({
-            "AccountId": acc["id"],
-            "Name": f"{primary_product['name']} - {acc['region']}"[:120],
-            "StageName": stage_name,
-            "Probability": int(probability * 100),
-            "Amount": deal_amount,
-            "CloseDate": deal_date.strftime("%Y-%m-%d"),
-            "LeadSource": random.choice(["Inbound Web", "Direct Outbound", "Partner Referral", "Field Event"]),
-            "Description": description
+        opportunities.append({
+            "id": opp_id,
+            "account_id": account_id,
+            "name": f"{primary_product['name']} - {region}"[:120],
+            "stage_name": stage_name,
+            "probability": int(probability * 100),
+            "amount": deal_amount,
+            "close_date": deal_date.strftime("%Y-%m-%d"),
+            "lead_source": random.choice(["Inbound Web", "Direct Outbound", "Partner Referral", "Field Event"]),
+            "description": description,
+            "created_date": deal_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "_fivetran_synced": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
         })
 
-opp_results = sf.bulk.Opportunity.insert(opportunity_staging)
-successful_opps = sum(1 for r in opp_results if r.get("success"))
+# Export to CSV
+with open("salesforce_account.csv", "w", newline="", encoding="utf-8") as f:
+    writer = csv.DictWriter(f, fieldnames=accounts[0].keys())
+    writer.writeheader()
+    writer.writerows(accounts)
 
-print(f"Loaded {len(valid_accounts)} Accounts and {successful_opps} Opportunities.")
+with open("salesforce_opportunity.csv", "w", newline="", encoding="utf-8") as f:
+    writer = csv.DictWriter(f, fieldnames=opportunities[0].keys())
+    writer.writeheader()
+    writer.writerows(opportunities)
+
+# Export to NDJSON for BigQuery load
+with open("salesforce_account.ndjson", "w", encoding="utf-8") as f:
+    for row in accounts:
+        f.write(json.dumps(row) + "\n")
+
+with open("salesforce_opportunity.ndjson", "w", encoding="utf-8") as f:
+    for row in opportunities:
+        f.write(json.dumps(row) + "\n")
+
+print(f"Generated {len(accounts)} Accounts and {len(opportunities)} Opportunities.")
+print("Created files: salesforce_account.csv, salesforce_opportunity.csv, salesforce_account.ndjson, salesforce_opportunity.ndjson")
