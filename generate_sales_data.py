@@ -117,4 +117,23 @@ for acc in valid_accounts:
             f"Region:{acc['region']}|"
             f"Family:{primary_product['family']}|"
             f"Product:{primary_product['name']}|"
-            f"Cost:{
+            f"Cost:{deal_cost:.2f}|"
+            f"Profit:{gross_profit:.2f}|"
+            f"Margin:{margin_pct:.2f}%"
+        )
+
+        opportunity_staging.append({
+            "AccountId": acc["id"],
+            "Name": f"{primary_product['name']} - {acc['region']}"[:120],
+            "StageName": stage_name,
+            "Probability": int(probability * 100),
+            "Amount": deal_amount,
+            "CloseDate": deal_date.strftime("%Y-%m-%d"),
+            "LeadSource": random.choice(["Inbound Web", "Direct Outbound", "Partner Referral", "Field Event"]),
+            "Description": description
+        })
+
+opp_results = sf.bulk.Opportunity.insert(opportunity_staging)
+successful_opps = sum(1 for r in opp_results if r.get("success"))
+
+print(f"Loaded {len(valid_accounts)} Accounts and {successful_opps} Opportunities.")
