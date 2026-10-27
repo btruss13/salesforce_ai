@@ -76,7 +76,7 @@ with st.sidebar:
     st.divider()
     st.subheader("📡 Live Stream Status")
 
- """
+"""
     # Locate the local events DB dynamically
     db_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "health_events.db"))
     
