@@ -8,7 +8,6 @@ st.set_page_config(layout="wide", page_title="Salesforce Copilot", page_icon="ðŸ
 st.markdown("<style>.stApp { background-color: #1A1A1A; color: #E0E0E0; }</style>", unsafe_allow_html=True)
 
 # --- Configuration & Credentials ---
-# Specify your GCP Project and Dataset containing the views
 GCP_PROJECT = os.environ.get("GCP_PROJECT", "my-data-479716")
 DATASET_ID = os.environ.get("BIGQUERY_DATASET", "salesforce")
 KEY_PATH = "/app/credentials/gemini_api_key.txt" if os.path.exists("/.dockerenv") else "/home/briean/.gcp/gemini_api_key.txt"
@@ -28,18 +27,31 @@ bq_client = get_bq_client()
 
 # --- Direct BigQuery Tools for Gemini ---
 
+@st.cache_data(ttl=600)
 def get_schema_info() -> str:
-    """Returns the names and schemas of BigQuery tables and views available in the dataset."""
+    """Returns the names and schemas of BigQuery tables and views using INFORMATION_SCHEMA."""
+    query = f"""
+        SELECT table_name, column_name, data_type
+        FROM `{GCP_PROJECT}.{DATASET_ID}.INFORMATION_SCHEMA.COLUMNS`
+        ORDER BY table_name, ordinal_position
+    """
     try:
-        tables = bq_client.list_tables(f"{GCP_PROJECT}.{DATASET_ID}")
-        schema_summary = []
-        for table_item in tables:
-            full_table = bq_client.get_table(table_item.reference)
-            columns = [f"{schema_field.name} ({schema_field.field_type})" for schema_field in full_table.schema]
-            schema_summary.append(
-                f"Table/View: {table_item.table_id} [{full_table.table_type}]\nColumns: {', '.join(columns)}"
+        query_job = bq_client.query(query)
+        # Timeout after 15s to prevent hanging on missing GCP credentials
+        df = query_job.result(timeout=15).to_dataframe()
+        
+        if df.empty:
+            return f"No tables or views found in dataset `{GCP_PROJECT}.{DATASET_ID}`."
+        
+        tables = {}
+        for _, row in df.iterrows():
+            tables.setdefault(row["table_name"], []).append(
+                f"{row['column_name']} ({row['data_type']})"
             )
-        return "\n\n".join(schema_summary) if schema_summary else "No tables found in dataset."
+            
+        return "\n\n".join(
+            [f"Table: {t}\nColumns: {', '.join(cols)}" for t, cols in tables.items()]
+        )
     except Exception as e:
         return f"Error retrieving schema: {str(e)}"
 
@@ -48,7 +60,7 @@ def execute_readonly_query(sql_query: str) -> str:
     clean_sql = sql_query.strip().strip(";").lower()
     
     # Basic safety enforcement against destructive statements
-    if not clean_sql.startswith("select") and not clean_sql.startswith("with"):
+    if not (clean_sql.startswith("select") or clean_sql.startswith("with")):
         return "Error: Only read-only SELECT or WITH statements are permitted."
 
     if "queries_run" not in st.session_state:
@@ -57,8 +69,8 @@ def execute_readonly_query(sql_query: str) -> str:
 
     try:
         query_job = bq_client.query(sql_query)
-        # Limit rows returned to prevent LLM context overflows
-        df = query_job.result(max_results=100).to_dataframe()
+        # Fail fast after 20s if the query hangs or hits permission blocks
+        df = query_job.result(max_results=100, timeout=20).to_dataframe()
         if df.empty:
             return "Query executed successfully, but returned 0 rows."
         return df.to_markdown(index=False)
@@ -89,14 +101,17 @@ def parse_markdown_table(text):
         return None
 
 with st.sidebar:
-    st.title("ðŸ§  BigQuery Direct")
+    LOGO_PATH = "/home/briean/repos/salesforce_ai/Optimize-with-MODULO-Logo2.png"
+    if os.path.exists(LOGO_PATH):
+        st.image(LOGO_PATH, use_container_width=True)
+    st.title("BigQuery Direct")
     st.info(f"Targeting dataset: `{GCP_PROJECT}.{DATASET_ID}`")
     st.markdown("""
 - **`account`**: Revenue, industry, location.
 - **`opportunity`**: Source, stage.
     """)
 
-st.title("Salesforce Copilot")
+st.title("Salesforce AI Copilot")
 st.caption("AI insights running directly over BigQuery native API.")
 
 api_key = get_gemini_key()
