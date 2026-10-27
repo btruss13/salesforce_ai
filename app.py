@@ -1,24 +1,17 @@
 import os
-import asyncio
 import streamlit as st
 import google.generativeai as genai
 import pandas as pd
-from mcp import ClientSession
-from mcp.client.sse import sse_client
+from google.cloud import bigquery
 
-st.set_page_config(layout="wide", page_title="Health Copilot", page_icon="🧠")
+st.set_page_config(layout="wide", page_title="Salesforce Copilot", page_icon="🧠")
 st.markdown("<style>.stApp { background-color: #1A1A1A; color: #E0E0E0; }</style>", unsafe_allow_html=True)
 
-# Dynamic Path & URL Resolution to support both Docker and Bare-Metal VM runs
-RUNNING_IN_DOCKER = os.path.exists("/.dockerenv") or os.path.exists("/app/credentials")
-
-if RUNNING_IN_DOCKER:
-    URL = "http://mcp-bigquery-server:8000/sse"
-    KEY_PATH = "/app/credentials/gemini_api_key.txt"
-else:
-    URL = "http://localhost:8000/sse"
-    KEY_PATH = "/home/briean/.gcp/gemini_api_key.txt"
-
+# --- Configuration & Credentials ---
+# Specify your GCP Project and Dataset containing the views
+GCP_PROJECT = os.environ.get("GCP_PROJECT", "my-data-479716")
+DATASET_ID = os.environ.get("BIGQUERY_DATASET", "salesforce")
+KEY_PATH = "/app/credentials/gemini_api_key.txt" if os.path.exists("/.dockerenv") else "/home/briean/.gcp/gemini_api_key.txt"
 
 def get_gemini_key():
     if os.path.exists(KEY_PATH):
@@ -26,23 +19,53 @@ def get_gemini_key():
             return f.read().strip()
     return os.environ.get("GEMINI_API_KEY", "")
 
-async def call_mcp(tool_name: str, args: dict):
-    async with sse_client(URL) as (r, w):
-        async with ClientSession(r, w) as session:
-            await session.initialize()
-            res = await session.call_tool(tool_name, args)
-            return res.content[0].text if res.content else ""
+# Initialize BigQuery Client directly
+@st.cache_resource
+def get_bq_client():
+    return bigquery.Client(project=GCP_PROJECT)
+
+bq_client = get_bq_client()
+
+# --- Direct BigQuery Tools for Gemini ---
 
 def get_schema_info() -> str:
-    """Returns the names and schemas of BigQuery views available for query."""
-    return asyncio.run(call_mcp("get_schema_info", {}))
+    """Returns the names and schemas of BigQuery tables and views available in the dataset."""
+    try:
+        tables = bq_client.list_tables(f"{GCP_PROJECT}.{DATASET_ID}")
+        schema_summary = []
+        for table_item in tables:
+            full_table = bq_client.get_table(table_item.reference)
+            columns = [f"{schema_field.name} ({schema_field.field_type})" for schema_field in full_table.schema]
+            schema_summary.append(
+                f"Table/View: {table_item.table_id} [{full_table.table_type}]\nColumns: {', '.join(columns)}"
+            )
+        return "\n\n".join(schema_summary) if schema_summary else "No tables found in dataset."
+    except Exception as e:
+        return f"Error retrieving schema: {str(e)}"
 
 def execute_readonly_query(sql_query: str) -> str:
-    """Executes a read-only SELECT query against the salesforce views and returns tabular markdown."""
+    """Executes a read-only SELECT query against BigQuery and returns tabular markdown."""
+    clean_sql = sql_query.strip().strip(";").lower()
+    
+    # Basic safety enforcement against destructive statements
+    if not clean_sql.startswith("select") and not clean_sql.startswith("with"):
+        return "Error: Only read-only SELECT or WITH statements are permitted."
+
     if "queries_run" not in st.session_state:
         st.session_state.queries_run = []
     st.session_state.queries_run.append(sql_query)
-    return asyncio.run(call_mcp("execute_readonly_query", {"sql_query": sql_query}))
+
+    try:
+        query_job = bq_client.query(sql_query)
+        # Limit rows returned to prevent LLM context overflows
+        df = query_job.result(max_results=100).to_dataframe()
+        if df.empty:
+            return "Query executed successfully, but returned 0 rows."
+        return df.to_markdown(index=False)
+    except Exception as e:
+        return f"BigQuery Execution Error: {str(e)}"
+
+# --- UI & Chat Setup ---
 
 def parse_markdown_table(text):
     lines = [l.strip() for l in text.strip().split("\n") if l.strip().startswith("|")]
@@ -66,78 +89,32 @@ def parse_markdown_table(text):
         return None
 
 with st.sidebar:
-    st.title("🧠 MCP Discovery")
-    st.info("Discovers and queries BigQuery views via Model Context Protocol.")
+    st.title("🧠 BigQuery Direct")
+    st.info(f"Targeting dataset: `{GCP_PROJECT}.{DATASET_ID}`")
     st.markdown("""
-    - **`account`**: Revenue, industry, location.
-    - **`opportunity`**: Source, stage.
+- **`account`**: Revenue, industry, location.
+- **`opportunity`**: Source, stage.
     """)
 
-    st.divider()
-    st.subheader("📡 Live Stream Status")
-
-"""
-    # Locate the local events DB dynamically
-    db_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "health_events.db"))
-    
-    if os.path.exists(db_file):
-        st.success("🟢 Real-Time Layer: ACTIVE")
-        try:
-            import sqlite3
-            import json
-            conn = sqlite3.connect(db_file)
-            cursor = conn.cursor()
-            
-            # Fetch latest snapshot key-values
-            cursor.execute("SELECT key, value FROM latest_health_snapshot")
-            snapshots = {row[0]: json.loads(row[1]) for row in cursor.fetchall()}
-            conn.close()
-            
-            # Show latest coaching alert / recommendation
-            if "latest_coaching_alert" in snapshots:
-                alert = snapshots["latest_coaching_alert"]
-                st.markdown("##### 💡 Live Coaching Alert")
-                msg = alert.get("message", "")
-                sug = alert.get("suggestion", "")
-                st.info(f"**{msg}**\n\n{sug}")
-                
-            # Show latest state snapshots
-            st.markdown("##### 🕒 Latest Active States")
-            col1, col2 = st.columns(2)
-            with col1:
-                if "latest_workout" in snapshots:
-                    w = snapshots["latest_workout"]
-                    st.metric("Latest Workout", f"{w.get('reps', 0)} reps", w.get("exercise", "workout")[:15])
-            with col2:
-                if "latest_sleep" in snapshots:
-                    s = snapshots["latest_sleep"]
-                    st.metric("Latest Sleep", f"{s.get('total_hours', 0.0)} hrs", "Sleep Summary")
-                
-        except Exception as e:
-            st.error(f"Error reading stream: {e}")
-    else:
-        st.info("⚪ Real-Time Layer: OFFLINE\n\n(Run `scripts/event_consumer.py` on the VM to activate)")
-"""   
-
 st.title("Salesforce Copilot")
-st.caption("AI insights running securely over BigQuery via MCP.")
+st.caption("AI insights running directly over BigQuery native API.")
 
 api_key = get_gemini_key()
 if not api_key:
-    st.error("❌ Gemini API Key not found at `/home/briean/.gcp/gemini_api_key.txt` on the host.")
+    st.error(f"❌ Gemini API Key not found at `{KEY_PATH}`.")
     st.stop()
 
 genai.configure(api_key=api_key)
+
 if "chat_session" not in st.session_state:
     model = genai.GenerativeModel(
-        model_name="gemini-3.6-flash",
+        model_name="gemini-3.8-flash",
         tools=[get_schema_info, execute_readonly_query],
         system_instruction=(
-            "You are an elite Salesforce copilot. "
-            "You have tools to query BigQuery views using SQL. "
-            "Always fetch schema info using `get_schema_info` if you are unsure of columns. "
-            "Answer questions using actual query results, cite dates/metrics, and write clear SQL. "
-            "Whenever you query data, present the results as a Markdown table so the UI can graph it. "
+            f"You are an elite Salesforce analytics assistant querying Google BigQuery dataset `{GCP_PROJECT}.{DATASET_ID}`. "
+            "Always inspect schemas via `get_schema_info` before writing queries. "
+            "Write standard GoogleSQL queries referencing fully-qualified table names (`project.dataset.table`). "
+            "Format data outputs as Markdown tables so the dashboard can render them as charts. "
             "Keep insights concise, encouraging, and analytical."
         )
     )
@@ -153,9 +130,6 @@ for msg in st.session_state.messages:
                     st.code(q, language="sql")
         if msg.get("df") is not None:
             st.dataframe(msg["df"], use_container_width=True)
-            num_cols = msg["df"].select_dtypes(include="number").columns.tolist()
-            if len(num_cols) >= 1 and len(msg["df"]) > 1:
-                st.line_chart(msg["df"], y=num_cols[0], use_container_width=True)
 
 if prompt := st.chat_input("Ask about sales, accounts, opportunities, trends..."):
     with st.chat_message("user"):
@@ -164,7 +138,7 @@ if prompt := st.chat_input("Ask about sales, accounts, opportunities, trends..."
     st.session_state.queries_run = []
 
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing and querying BigQuery warehouse..."):
+        with st.spinner("Executing BigQuery SQL..."):
             try:
                 response = st.session_state.chat_session.send_message(prompt)
                 ans_text = response.text
