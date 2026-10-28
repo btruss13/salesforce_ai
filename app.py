@@ -101,7 +101,7 @@ def parse_markdown_table(text):
         return None
 
 with st.sidebar:
-    LOGO_PATH = "/home/briean/repos/salesforce_ai/Optimize-with-MODULO-Logo2.png"
+    LOGO_PATH = "/home/briean/repos/salesforce_ai/images/Optimize-with-MODULO-Logo2.png"
     if os.path.exists(LOGO_PATH):
         st.image(LOGO_PATH, use_container_width=True)
     st.title("BigQuery Direct")
